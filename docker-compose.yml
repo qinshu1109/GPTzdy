@@ -11,8 +11,12 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=50003
-      - NO_PROXY=localhost,127.0.0.1,django,chatgpt-mirror,cfbypass
-      - no_proxy=localhost,127.0.0.1,django,chatgpt-mirror,cfbypass
+      - HTTP_PROXY=${CHATGPT_OUTBOUND_PROXY-http://host.docker.internal:1081}
+      - HTTPS_PROXY=${CHATGPT_OUTBOUND_PROXY-http://host.docker.internal:1081}
+      - http_proxy=${CHATGPT_OUTBOUND_PROXY-http://host.docker.internal:1081}
+      - https_proxy=${CHATGPT_OUTBOUND_PROXY-http://host.docker.internal:1081}
+      - NO_PROXY=localhost,127.0.0.1,::1,django,chatgpt-mirror,cfbypass
+      - no_proxy=localhost,127.0.0.1,::1,django,chatgpt-mirror,cfbypass
       - DATABASE_PATH=/app/data/chatgpt_mirror.db
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
@@ -27,7 +31,7 @@ services:
       - CHATGPT_CDN_BASE_URL=${CHATGPT_CDN_BASE_URL:-https://cdn.oaistatic.com}
       - CHATGPT_AB_BASE_URL=${CHATGPT_AB_BASE_URL:-https://ab.chatgpt.com}
       - CF_BYPASS_URL=http://cfbypass:8000
-      - REQUEST_TIMEOUT_SECS=${REQUEST_TIMEOUT_SECS:-180}
+      - REQUEST_TIMEOUT_SECS=${REQUEST_TIMEOUT_SECS:-600}
       - RUST_LOG=${RUST_LOG:-info}
     depends_on:
       - django
@@ -45,6 +49,7 @@ services:
       - UPSTREAM=http://chatgpt-mirror:50003
       - LISTEN_HOST=0.0.0.0
       - LISTEN_PORT=50002
+      - CLIENT_MAX_SIZE=${EDGE_CLIENT_MAX_SIZE:-536870912}
     depends_on:
       - chatgpt-mirror
     restart: unless-stopped
@@ -61,8 +66,8 @@ services:
       - DJANGO_ENV=PRODUCTION
       - DJANGO_DEBUG=${DJANGO_DEBUG:-false}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY must be set}
-      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-django,localhost,127.0.0.1,167.254.240.189}
-      - DJANGO_CSRF_TRUSTED_ORIGINS=${DJANGO_CSRF_TRUSTED_ORIGINS:-http://167.254.240.189:50002}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-django,localhost,127.0.0.1,167.254.240.189,167.254.240.189.sslip.io}
+      - DJANGO_CSRF_TRUSTED_ORIGINS=${DJANGO_CSRF_TRUSTED_ORIGINS:-http://167.254.240.189:50002,https://167.254.240.189.sslip.io}
       - DJANGO_SESSION_COOKIE_SECURE=${DJANGO_SESSION_COOKIE_SECURE:-false}
       - DJANGO_CSRF_COOKIE_SECURE=${DJANGO_CSRF_COOKIE_SECURE:-false}
       - SHOW_GITHUB=${SHOW_GITHUB:-false}
@@ -95,7 +100,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - TZ=Asia/Shanghai
-      - CF_BYPASS_PROXY_SERVER=http://host.docker.internal:1081
+      - CF_BYPASS_PROXY_SERVER=${CHATGPT_OUTBOUND_PROXY-http://host.docker.internal:1081}
     restart: unless-stopped
     networks:
       - chatgpt-network
