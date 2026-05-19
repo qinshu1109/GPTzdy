@@ -5,7 +5,7 @@ import os
 import re
 from typing import Iterable
 
-from aiohttp import ClientSession, ClientTimeout, DummyCookieJar, WSMsgType, web
+from aiohttp import ClientSession, ClientTimeout, DummyCookieJar, WSMsgType, client_exceptions, web
 
 
 UPSTREAM = os.environ.get("UPSTREAM", "http://chatgpt-mirror:50003").rstrip("/")
@@ -123,7 +123,7 @@ def request_headers(request: web.Request, *, websocket: bool = False) -> dict[st
             continue
         if websocket and lower in DROP_WEBSOCKET_HEADERS:
             continue
-        if not is_local_route(request.path) and (
+        if not websocket and not is_local_route(request.path) and (
             lower in DROP_CHATGPT_ROUTE_HEADERS or lower.startswith("sec-fetch-")
         ):
             continue
@@ -136,6 +136,7 @@ def request_headers(request: web.Request, *, websocket: bool = False) -> dict[st
     if not websocket:
         headers["Accept-Encoding"] = "identity"
 
+    headers["Host"] = request.host
     headers["X-Forwarded-Host"] = request.host
     headers["X-Forwarded-Proto"] = request.scheme
     if request.remote:
@@ -200,54 +201,57 @@ async def proxy_websocket(request: web.Request) -> web.StreamResponse:
     session: ClientSession = request.app["session"]
     protocols = websocket_protocols(request)
 
-    async with session.ws_connect(
-        target,
-        headers=request_headers(request, websocket=True),
-        protocols=protocols,
-        timeout=ClientTimeout(total=None),
-    ) as ws_upstream:
-        ws_client = web.WebSocketResponse(
-            protocols=[ws_upstream.protocol] if ws_upstream.protocol else (),
-        )
-        await ws_client.prepare(request)
+    try:
+        async with session.ws_connect(
+            target,
+            headers=request_headers(request, websocket=True),
+            protocols=protocols,
+            timeout=ClientTimeout(total=None),
+        ) as ws_upstream:
+            ws_client = web.WebSocketResponse(
+                protocols=[ws_upstream.protocol] if ws_upstream.protocol else (),
+            )
+            await ws_client.prepare(request)
 
-        async def client_to_upstream() -> None:
-            async for msg in ws_client:
-                if msg.type == WSMsgType.TEXT:
-                    await ws_upstream.send_str(msg.data)
-                elif msg.type == WSMsgType.BINARY:
-                    await ws_upstream.send_bytes(msg.data)
-                elif msg.type == WSMsgType.PING:
-                    await ws_upstream.ping()
-                elif msg.type == WSMsgType.PONG:
-                    await ws_upstream.pong()
-                elif msg.type == WSMsgType.CLOSE:
-                    await ws_upstream.close()
+            async def client_to_upstream() -> None:
+                async for msg in ws_client:
+                    if msg.type == WSMsgType.TEXT:
+                        await ws_upstream.send_str(msg.data)
+                    elif msg.type == WSMsgType.BINARY:
+                        await ws_upstream.send_bytes(msg.data)
+                    elif msg.type == WSMsgType.PING:
+                        await ws_upstream.ping()
+                    elif msg.type == WSMsgType.PONG:
+                        await ws_upstream.pong()
+                    elif msg.type == WSMsgType.CLOSE:
+                        await ws_upstream.close()
 
-        async def upstream_to_client() -> None:
-            async for msg in ws_upstream:
-                if msg.type == WSMsgType.TEXT:
-                    await ws_client.send_str(msg.data)
-                elif msg.type == WSMsgType.BINARY:
-                    await ws_client.send_bytes(msg.data)
-                elif msg.type == WSMsgType.PING:
-                    await ws_client.ping()
-                elif msg.type == WSMsgType.PONG:
-                    await ws_client.pong()
-                elif msg.type == WSMsgType.CLOSE:
-                    await ws_client.close()
+            async def upstream_to_client() -> None:
+                async for msg in ws_upstream:
+                    if msg.type == WSMsgType.TEXT:
+                        await ws_client.send_str(msg.data)
+                    elif msg.type == WSMsgType.BINARY:
+                        await ws_client.send_bytes(msg.data)
+                    elif msg.type == WSMsgType.PING:
+                        await ws_client.ping()
+                    elif msg.type == WSMsgType.PONG:
+                        await ws_client.pong()
+                    elif msg.type == WSMsgType.CLOSE:
+                        await ws_client.close()
 
-        tasks = {
-            asyncio.create_task(client_to_upstream()),
-            asyncio.create_task(upstream_to_client()),
-        }
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            task.result()
-    return ws_client
+            tasks = {
+                asyncio.create_task(client_to_upstream()),
+                asyncio.create_task(upstream_to_client()),
+            }
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                task.result()
+            return ws_client
+    except client_exceptions.WSServerHandshakeError as exc:
+        return web.Response(status=exc.status, text="upstream websocket rejected")
 
 
 async def proxy_http(request: web.Request) -> web.StreamResponse:
