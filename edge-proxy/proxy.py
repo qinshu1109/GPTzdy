@@ -136,9 +136,10 @@ def request_headers(request: web.Request, *, websocket: bool = False) -> dict[st
     if not websocket:
         headers["Accept-Encoding"] = "identity"
 
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", request.scheme)
     headers["Host"] = request.host
     headers["X-Forwarded-Host"] = request.host
-    headers["X-Forwarded-Proto"] = request.scheme
+    headers["X-Forwarded-Proto"] = forwarded_proto
     if request.remote:
         prior = request.headers.get("X-Forwarded-For")
         headers["X-Forwarded-For"] = f"{prior}, {request.remote}" if prior else request.remote
